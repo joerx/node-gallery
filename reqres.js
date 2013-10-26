@@ -1,11 +1,12 @@
 var http = require('http');
 
 function handleRequest(req, res) {
-  console.log('---------------------------------');
-  console.log(req);
-  console.log('---------------------------------');
-  console.log(res);
-  console.log('---------------------------------');
+  // console.log('---------------------------------');
+  // console.log(req);
+  // console.log('---------------------------------');
+  // console.log(res);
+  // console.log('---------------------------------');
+  console.log(req.headers.host);
   res.writeHead(200, {'Content-Type': 'text/plain'});
   res.end("OK\n");
 }
