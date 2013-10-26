@@ -1,5 +1,6 @@
 var http = require('http'),
-    fs = require('fs');
+    fs = require('fs'),
+    url = require('url');
 
 var ALBUMS_DIR = './gallery/';
 
@@ -7,28 +8,37 @@ var ERR_NO_SUCH_ALBUM = 'no_such_album';
 var ERR_UNKNOWN_ERROR = 'unknown_error';
 var ERR_FS_ERROR = 'filesystem_error';
 var ERR_NO_URL_HANDLER = 'no_url_handler';
+var ERR_INVALID_ARGUMENT = 'invalid_argument';
 
 // Web server request handler function
 function handleRequest(req, res) {
   console.log("Incoming request: " + req.method + " " + req.url);
+  req.parsedUrl = url.parse(req.url, true);
+  var baseUrl = req.parsedUrl.pathname;
+  var query = req.parsedUrl.query || {};
+
   var matches = null;
-  if (matches = req.url.match(/^\/albums\/([a-zA-Z0-9_-]+)/)) {
+  if (matches = baseUrl.match(/^\/albums\/([a-zA-Z0-9_-]+)/)) {
     // var albumName = req.url.substr(8, req.url.length);
     var albumName = matches[1];
-    handleGetAlbumContents(albumName, req, res);
-  } else if (matches = req.url.match(/^\/albums\/?/)) {
-    handleListAlbums(req, res);
+    handleGetAlbumContents(albumName, req, res, query);
+  } else if (matches = baseUrl.match(/^\/albums\/?/)) {
+    handleListAlbums(req, res, query);
   } else {
     respondNotFound(res, mkError(ERR_NO_HANDLER, 'No handler for URL ' + req.url));
   }
 };
 
 // Send a response containing the list of albums
-function handleListAlbums(req, res) {
+function handleListAlbums(req, res, options) {
   console.log('List albums');
-  loadAlbumList(function(err, albums){
+  loadAlbumList(options, function(err, albums){
     if (err) {
-      respondError(res, 503, err);
+      if (err.code == ERR_INVALID_ARGUMENT) {
+        respondError(res, 400, err);
+      } else {
+        respondError(res, 503, err);
+      }
     } else {
       respondSuccess(res, 200, {collection: albums});
     }
@@ -36,13 +46,15 @@ function handleListAlbums(req, res) {
 }
 
 // Send a response containing the contents of a single album
-function handleGetAlbumContents(albumName, req, res) {
+function handleGetAlbumContents(albumName, req, res, options) {
   console.log('List contents of album: ' + albumName);
-  loadAlbum(albumName, function(err, pictures) {
+  loadAlbum(albumName, options, function(err, pictures) {
     if (err) {
       console.log(err);
       if (err.code == ERR_NO_SUCH_ALBUM) {
         respondNotFound(res, err);
+      } else if (err.code == ERR_INVALID_ARGUMENT) {
+        respondError(res, 400, err);
       } else {
         respondError(res, 503, err);
       }
@@ -78,17 +90,25 @@ function respond(res, status, data) {
 }
 
 // Function to load album list from disk
-function loadAlbumList(callback) {
+function loadAlbumList(options, callback) {
+
+  try {
+    options = validatePager(options);
+  } catch (err) {
+    return callback(err);
+  }
+
   fs.readdir(ALBUMS_DIR, function(err, files) {
     if (err) {
       callback(err);
     } else {
       albums = [];
       (function iterator(idx) {
-        if (idx == files.length) {
-          // termination condition, only on last iteration callback is invoked
-          callback(null, albums);
-          return;
+        if (idx >= files.length || albums.length >= options.pageSize) {
+          // termination condition, only on last iteration callback is invoked\
+          // terminate if no more files are available or if we found enough files
+          // to return the current page, whatever happens first.
+          return callback(null, albums);
         } else {
           fs.stat(ALBUMS_DIR + files[idx],
           function (err, stats) {
@@ -103,13 +123,19 @@ function loadAlbumList(callback) {
             }
           });
         }
-      })(0);
+      })(options.page * options.pageSize);
     }
   });
 }
 
-function loadAlbum(albumName, callback) {
+function loadAlbum(albumName, options, callback) {
   var path = ALBUMS_DIR + '/' + albumName + '/';
+
+  try {
+    validatePager(options);
+  } catch (err) {
+    return callback(err);
+  }
 
   fs.readdir(path, function(err, files) {
     if (err) {
@@ -124,7 +150,7 @@ function loadAlbum(albumName, callback) {
       var pictures = [];
 
       (function iterator(idx){
-        if (idx == files.length) {
+        if (idx >= files.length || pictures.length >= options.pageSize) {
           callback(null, pictures);
         } else {
           fs.stat(path + files[idx], function(err, stats) {
@@ -139,7 +165,7 @@ function loadAlbum(albumName, callback) {
             iterator(idx + 1); // recursion to iterator
           });
         }
-      })(0);      
+      })(options.page * options.pageSize);      
     }
   });
 }
@@ -153,6 +179,25 @@ function mkError(errCode, msg) {
 function noSuchAlbum() {
   return mkError(ERR_NO_SUCH_ALBUM, 'The specified album does not exist');
 } 
+
+function validatePager(options) {
+
+  var page = isFinite(options.page) ? parseInt(options.page) : 0;
+  var pageSize = isFinite(options.pageSize) ? parseInt(options.pageSize) : 10;
+
+  if (page < 0) {
+    throw mkError(ERR_INVALID_ARGUMENT, 'Page must be greater or equals zero');
+  }
+
+  if (pageSize <= 0) {
+    throw mkError(ERR_INVALID_ARGUMENT, 'Page size must be greater than zero');
+  }
+
+  options.page = page;
+  options.pageSize = pageSize;
+
+  return options;
+}
 
 // Fire up the server on port 8080
 var server = http.createServer(handleRequest);
